@@ -1,0 +1,91 @@
+-- Clube do Livro SST
+-- Execute no SQL Editor do Supabase.
+
+create extension if not exists pgcrypto;
+
+create table public.challenges (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  book_title text not null,
+  total_pages integer not null check (total_pages > 0),
+  start_date date not null,
+  end_date date not null,
+  prize text,
+  penalty text,
+  max_pokes_per_day integer not null default 3
+    check (max_pokes_per_day >= 0),
+  created_at timestamptz not null default now(),
+  check (end_date >= start_date)
+);
+
+create table public.readers (
+  id uuid primary key default gen_random_uuid(),
+  challenge_id uuid not null references public.challenges(id)
+    on delete cascade,
+  name text not null,
+  phone text,
+  avatar_url text,
+  guardian_name text not null,
+  guardian_phone text,
+  public_profile boolean not null default true,
+  consent_whatsapp boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create table public.reading_entries (
+  id uuid primary key default gen_random_uuid(),
+  reader_id uuid not null references public.readers(id)
+    on delete cascade,
+  reading_date date not null,
+  pages integer not null check (pages > 0),
+  note text,
+  created_at timestamptz not null default now(),
+  unique (reader_id, reading_date)
+);
+
+create table public.pokes (
+  id uuid primary key default gen_random_uuid(),
+  reader_id uuid not null references public.readers(id)
+    on delete cascade,
+  sender_id uuid references auth.users(id),
+  message text not null,
+  sent_at timestamptz not null default now(),
+  status text not null default 'pending'
+    check (status in ('pending', 'sent', 'failed'))
+);
+
+create index readers_challenge_idx
+  on public.readers(challenge_id);
+
+create index entries_reader_date_idx
+  on public.reading_entries(reader_id, reading_date);
+
+create index pokes_reader_date_idx
+  on public.pokes(reader_id, sent_at);
+
+-- View para o painel: progresso calculado no banco.
+create view public.reader_progress as
+select
+  r.id,
+  r.challenge_id,
+  r.name,
+  r.guardian_name,
+  r.avatar_url,
+  r.public_profile,
+  c.book_title,
+  c.total_pages,
+  c.start_date,
+  c.end_date,
+  coalesce(sum(e.pages), 0)::integer as pages_read,
+  least(
+    100,
+    round(coalesce(sum(e.pages), 0) * 100.0 / c.total_pages)
+  )::integer as progress_percent,
+  count(e.id)::integer as reading_days
+from public.readers r
+join public.challenges c on c.id = r.challenge_id
+left join public.reading_entries e on e.reader_id = r.id
+group by
+  r.id, r.challenge_id, r.name, r.guardian_name,
+  r.avatar_url, r.public_profile, c.book_title,
+  c.total_pages, c.start_date, c.end_date;
